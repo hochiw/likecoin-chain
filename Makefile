@@ -25,15 +25,7 @@ export GO111MODULE = on
 
 build_tags = netgo
 ifeq ($(LEDGER_ENABLED),true)
-  ifeq ($(OS),Windows_NT)
-    GCCEXE = $(shell where gcc.exe 2> NUL)
-    ifeq ($(GCCEXE),)
-      $(error gcc.exe not installed for ledger support, please install or set LEDGER_ENABLED=false)
-    else
-      build_tags += ledger
-    endif
-  else
-    UNAME_S = $(shell uname -s)
+  UNAME_S = $(shell uname -s)
     ifeq ($(UNAME_S),OpenBSD)
       $(warning OpenBSD detected, disabling ledger support (https://github.com/cosmos/cosmos-sdk/issues/1988))
     else
@@ -44,7 +36,6 @@ ifeq ($(LEDGER_ENABLED),true)
         build_tags += ledger
       endif
     endif
-  endif
 endif
 
 ifeq (cleveldb,$(findstring cleveldb,$(LIKE_BUILD_OPTIONS)))
@@ -81,6 +72,10 @@ ifeq (,$(findstring nostrip,$(LIKE_BUILD_OPTIONS)))
   BUILD_FLAGS += -trimpath
 endif
 
+###############################################################################
+###                          	Development  	                            ###
+###############################################################################
+
 all: install test
 
 $(BUILDDIR)/:
@@ -94,12 +89,33 @@ download: go.sum
 	@echo "--> Download go modules to local cache"
 	go mod download
 
-go-mod-cache: download
-
-
 go.sum: go.mod
 	@echo "--> Ensure dependencies have not been modified"
 	go mod verify
+
+install: go.sum $(BUILDDIR)/
+	go install -mod=readonly $(BUILD_FLAGS) ./...
+
+test:
+	go test -v ./...
+
+clean:
+	rm -rf $(BUILDDIR)/ artifacts/
+
+lint:
+	golangci-lint run --disable-all -E errcheck --timeout 10m
+	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" | xargs gofmt -d -s
+
+format:
+	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/lcd/statik/statik.go" | xargs gofmt -w -s
+	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/lcd/statik/statik.go" | xargs misspell -w
+	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/lcd/statik/statik.go" | xargs goimports -w -local github.com/cosmos/cosmos-sdk
+
+.PHONY: all vendor download install test clean lint format
+
+###############################################################################
+###                          		Build  	                           		###
+###############################################################################
 
 build-reproducible: go.sum
 	$(DOCKER) rm latest-build || true
@@ -124,8 +140,6 @@ docker-build: go.sum
         --tag $(IMAGE_TAG) \
 		.
 
-build-docker: docker-build
-
 docker-push:
 	@echo "Pushing image $(IMAGE_TAG) to registry"
 	$(DOCKER) push $(IMAGE_TAG)
@@ -133,23 +147,12 @@ docker-push:
 build: go.sum $(BUILDDIR)/
 	go build -mod=readonly $(BUILD_FLAGS) -o $(BUILDDIR)/ ./...
 
-install: go.sum $(BUILDDIR)/
-	go install -mod=readonly $(BUILD_FLAGS) ./...
+.PHONY: build-reproducible docker-login docker-build docker-push build
 
-test:
-	go test -v ./...
+###############################################################################
+###                          		Release  	                           	###
+###############################################################################
 
-clean:
-	rm -rf $(BUILDDIR)/ artifacts/
-
-lint:
-	golangci-lint run --disable-all -E errcheck --timeout 10m
-	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" | xargs gofmt -d -s
-
-format:
-	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/lcd/statik/statik.go" | xargs gofmt -w -s
-	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/lcd/statik/statik.go" | xargs misspell -w
-	find . -name '*.go' -type f -not -path "./vendor*" -not -path "*.git*" -not -path "./client/lcd/statik/statik.go" | xargs goimports -w -local github.com/cosmos/cosmos-sdk
 
 release:
 	@if [ ! -f ".release-env" ]; then \
@@ -166,10 +169,14 @@ release:
 		-w /go/src/$(NAME) \
 		ghcr.io/troian/golang-cross:${GOLANG_CROSS_VERSION} \
 		release --rm-dist --skip-validate
-	
-.PHONY: go-mod-cache gen-proto build-reproducible build-docker build install test clean lint format vendor release-dry-run release docker-build
 
-proto-all: proto-format proto-lint
+.PHONY: release
+
+###############################################################################
+###                          		Protobuf  	                           	###
+###############################################################################
+
+proto-all: proto-format proto-lint gen-proto
 
 gen-proto: x/
 	./gen_proto.sh
@@ -191,4 +198,4 @@ proto-update-deps:
 	@mkdir -p $(COSMOS_PROTO_TYPES)
 	@curl -sSL $(COSMOS_PROTO_URL)/cosmos.proto > $(COSMOS_PROTO_TYPES)/cosmos.proto
 
-.PHONY: proto-all proto-format proto-lint proto-check-breaking
+.PHONY: proto-all gen-proto proto-format proto-lint proto-check-breaking
